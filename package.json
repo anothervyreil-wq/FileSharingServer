@@ -1,17 +1,6 @@
 {
-  "name": "filesharing-render-server",
-  "version": "1.1.0",
-  "private": true,
-  "description": "Node.js server for the FileSharing Windows client",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "express": "^4.21.2",
-    "multer": "^1.4.5-lts.2"
-  }
+  "name":"filesharing-render-server","version":"1.2.0","private":true,
+  "description":"Node.js server for FileSharing storage and folder browser",
+  "main":"server.js","scripts":{"start":"node server.js"},"engines":{"node":">=20"},
+  "dependencies":{"express":"^4.21.2","multer":"^1.4.5-lts.2"}
 }

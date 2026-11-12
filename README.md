@@ -1,23 +1,17 @@
-# FileSharing Render Server (No Token)
+# FileSharing server 1.2.0 (Render)
 
-Node.js/Express server for the FileSharing Windows client. No access token or login secret is required.
+Deploy this folder as a Node web service. Build command: `npm install`; start command: `npm start`.
 
-## Deploy on Render
-- Runtime: Node
-- Build command: `npm install`
-- Start command: `npm start`
-- Health check path: `/health`
+Set a persistent disk and mount it at `/var/data`; set `STORAGE_DIR=/var/data` in Render so uploaded files, folders, ordering, and activity survive deploys/restarts. Without a persistent disk, Render filesystem changes can be lost on redeploy/restart.
 
-The server listens on `0.0.0.0` and Render's `PORT` environment variable.
+## API
+- `GET /health`
+- `GET /api/storage?folder=` — list files/folders in a folder
+- `POST /api/folders` JSON `{ "name": "Folder", "parent": "" }`
+- `POST /api/upload` multipart fields `files` and `folder`
+- `PATCH /api/storage/order` JSON `{ "folder": "", "items": [{"id":"...","type":"file|folder"}] }`
+- `GET /api/activity`
+- `GET /files/:filename`
+- `GET /api/updates/latest`
 
-## Optional environment variables
-- `MAX_FILE_MB` (default `250`)
-- `STORAGE_DIR` (default `./storage`)
-- `UPDATE_VERSION` (default `1.1.0`)
-- `UPDATE_CHANGES` (pipe-separated release notes)
-- `UPDATE_DOWNLOAD_URL` (HTTPS link to the latest Windows EXE)
-
-## Important security and storage notes
-This no-token server is public: anyone who knows the URL can list, upload, and download files. Do not use it for private or sensitive files.
-
-Render free web services use ephemeral storage and can lose uploaded files after restarts, deploys, or sleep. For persistent uploads, use a paid Render service with a persistent disk mounted at `/var/data`, then set `STORAGE_DIR=/var/data`. See https://render.com/docs/disks and https://render.com/docs/free.
+The Windows client and server must be updated together for Storage browsing, folder activity, and saved ordering. The server currently has no user authentication; anyone who can reach its public URL can access and modify shared storage. Do not store sensitive/private files on a public unauthenticated deployment.
