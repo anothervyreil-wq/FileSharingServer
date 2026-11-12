@@ -1,17 +1,22 @@
-# FileSharing server 1.2.0 (Render)
+# Remix Developer App — hosted server
 
-Deploy this folder as a Node web service. Build command: `npm install`; start command: `npm start`.
+Node.js/Express API for the Remix Developer App Windows client.
 
-Set a persistent disk and mount it at `/var/data`; set `STORAGE_DIR=/var/data` in Render so uploaded files, folders, ordering, and activity survive deploys/restarts. Without a persistent disk, Render filesystem changes can be lost on redeploy/restart.
+## Deploy
+- Runtime: Node.js 20+ (Node.js 22 recommended)
+- Start command: `npm start`
+- Persistent disk: mount it at the configured `STORAGE_DIR` (or preserve the default `storage` directory).
+- Environment: `PORT` (platform supplied), `STORAGE_DIR` (recommended persistent mount), `MAX_FILE_MB` (default 250), `UPDATE_VERSION`, `UPDATE_CHANGES` (pipe-separated), `UPDATE_DOWNLOAD_URL`.
 
-## API
-- `GET /health`
-- `GET /api/storage?folder=` — list files/folders in a folder
-- `POST /api/folders` JSON `{ "name": "Folder", "parent": "" }`
-- `POST /api/upload` multipart fields `files` and `folder`
-- `PATCH /api/storage/order` JSON `{ "folder": "", "items": [{"id":"...","type":"file|folder"}] }`
-- `GET /api/activity`
-- `GET /files/:filename`
-- `GET /api/updates/latest`
+The server stores binary file contents under `STORAGE_DIR/uploads` and JSON metadata/activity under `STORAGE_DIR/metadata`. Ensure the platform's persistent disk is mounted at `STORAGE_DIR`; ephemeral container storage will not survive redeploys.
 
-The Windows client and server must be updated together for Storage browsing, folder activity, and saved ordering. The server currently has no user authentication; anyone who can reach its public URL can access and modify shared storage. Do not store sensitive/private files on a public unauthenticated deployment.
+## API capabilities
+- List folders/files and retrieve activity.
+- Create folders and upload/download actual file bytes.
+- Rename and move files/folders (`PUT /api/items/:type/:id`).
+- Copy files/folders (`POST /api/items/:type/:id/copy`).
+- Delete files/folders (`DELETE /api/items/:type/:id`).
+- Replace file contents (`POST /api/files/:id/replace`, multipart field `file`).
+- Persist manual ordering (`PATCH /api/storage/order`).
+
+Names and folder paths are validated; metadata writes use a temporary file and atomic rename. This server does not implement authentication or per-user authorization. Do not expose it publicly with sensitive data until authentication and transport/access controls are added.
