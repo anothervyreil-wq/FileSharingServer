@@ -1,14 +1,30 @@
 'use strict';
 const express=require('express'),multer=require('multer'),fs=require('fs'),path=require('path'),crypto=require('crypto');
 const app=express(); app.disable('x-powered-by'); app.set('trust proxy',1); app.use(express.json({limit:'2mb'}));
-const PORT=Number(process.env.PORT||10000), STORAGE_DIR=path.resolve(process.env.STORAGE_DIR||path.join(__dirname,'storage')), META_DIR=path.join(STORAGE_DIR,'metadata'), FILE_DIR=path.join(STORAGE_DIR,'uploads'), FOLDERS_FILE=path.join(META_DIR,'folders.json'), ACTIVITY_FILE=path.join(META_DIR,'activity.json'), USERS_FILE=path.join(META_DIR,'users.json'), SESSIONS_FILE=path.join(META_DIR,'sessions.json'), LOGIN_AUDIT_FILE=path.join(META_DIR,'login-audit.json'), MAX_FILE_MB=Math.max(1,Number(process.env.MAX_FILE_MB||250));
-for(const d of [META_DIR,FILE_DIR])fs.mkdirSync(d,{recursive:true});
+const PORT=Number(process.env.PORT||10000), MAX_FILE_MB=Math.max(1,Number(process.env.MAX_FILE_MB||250));
+let STORAGE_DIR=path.resolve(process.env.STORAGE_DIR||path.join(__dirname,'storage'));
+function prepareStorage(preferred){
+  const candidates=[preferred, ...(preferred==='/var/data'?['/tmp/remix-developer-app-storage']:[])];
+  let lastError;
+  for(const candidate of candidates){
+    try{
+      fs.mkdirSync(path.join(candidate,'metadata'),{recursive:true});
+      fs.mkdirSync(path.join(candidate,'uploads'),{recursive:true});
+      STORAGE_DIR=candidate;
+      if(candidate!==preferred) console.warn(`WARNING: Cannot write to STORAGE_DIR=${preferred}; using temporary storage ${candidate}. Files may be lost when the service restarts or redeploys.`);
+      return;
+    }catch(err){lastError=err;console.error(`Cannot initialize storage at ${candidate}: ${err.message}`);}
+  }
+  throw lastError;
+}
+prepareStorage(STORAGE_DIR);
+const META_DIR=path.join(STORAGE_DIR,'metadata'), FILE_DIR=path.join(STORAGE_DIR,'uploads'), FOLDERS_FILE=path.join(META_DIR,'folders.json'), ACTIVITY_FILE=path.join(META_DIR,'activity.json'), USERS_FILE=path.join(META_DIR,'users.json'), LOGIN_AUDIT_FILE=path.join(META_DIR,'login-audit.json');
 const readJson=(p,d)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return d}};
 function writeJson(p,v){const t=p+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(t,JSON.stringify(v,null,2));fs.renameSync(t,p)}
 const safeName=n=>{const v=String(n||'').trim();if(!v||v==='.'||v==='..'||/[\x00-\x1f<>:"/\\|?*]/.test(v))throw new Error('Invalid item name');return v.slice(0,180)};
 const safeFolder=v=>String(v||'').split('/').filter(Boolean).map(safeName).join('/');
 const folders=()=>readJson(FOLDERS_FILE,[]),saveFolders=v=>writeJson(FOLDERS_FILE,v);
-function files(){return fs.readdirSync(META_DIR).filter(n=>n.endsWith('.json')&&!['folders.json','activity.json','users.json','sessions.json','login-audit.json'].includes(n)).map(n=>readJson(path.join(META_DIR,n),null)).filter(Boolean)}
+function files(){return fs.readdirSync(META_DIR).filter(n=>n.endsWith('.json')&&!['folders.json','activity.json','users.json','login-audit.json'].includes(n)).map(n=>readJson(path.join(META_DIR,n),null)).filter(x=>x&&typeof x.id==='string'&&typeof x.download_url==='string'&&typeof x.name==='string')}
 const metaPath=id=>{if(!/^[a-zA-Z0-9-]{8,80}$/.test(String(id)))throw new Error('Invalid item ID');return path.join(META_DIR,id+'.json')};
 function activity(folder,action,name,device){const a=readJson(ACTIVITY_FILE,[]);a.unshift({id:crypto.randomUUID(),folder:folder||'',action,name,device:device||'Another computer',at:new Date().toISOString()});writeJson(ACTIVITY_FILE,a.slice(0,200))}
 function getItem(type,id){if(type==='file'){const f=readJson(metaPath(id),null);if(!f)throw Object.assign(new Error('File not found'),{status:404});return f}if(type==='folder'){const f=folders().find(x=>x.id===id);if(!f)throw Object.assign(new Error('Folder not found'),{status:404});return f}throw new Error('Invalid item type')}
@@ -16,33 +32,30 @@ function ensureUnique(name,parent,excludeId){if(files().some(x=>x.name.toLowerCa
 const disk=multer.diskStorage({destination:(_r,_f,cb)=>cb(null,FILE_DIR),filename:(_r,_f,cb)=>cb(null,crypto.randomUUID())});
 const upload=multer({storage:disk,limits:{fileSize:MAX_FILE_MB*1024*1024,files:30}});
 
-// Authentication: long-lived opaque sessions stored on the persistent disk.
-// Admin privileges are controlled ONLY by ADMIN_USERNAME / ADMIN_USERS server environment variables.
+// Authentication: passwords are scrypt-hashed; sessions are signed, short-lived bearer tokens.
 const TOKEN_SECRET=process.env.TOKEN_SECRET||(()=>{const p=path.join(META_DIR,'token-secret');if(fs.existsSync(p))return fs.readFileSync(p,'utf8');const v=crypto.randomBytes(48).toString('hex');fs.writeFileSync(p,v,{mode:0o600});return v})();
 const users=()=>readJson(USERS_FILE,[]);
+const adminNames=()=>new Set([process.env.ADMIN_USERNAME||'',...(process.env.ADMIN_USERS||'').split(',')].map(x=>x.trim().toLowerCase()).filter(Boolean));
+const effectiveRole=u=>adminNames().has(String(u.username||'').toLowerCase())?'Admin':'User';
 const saveUsers=v=>writeJson(USERS_FILE,v);
-const sessions=()=>readJson(SESSIONS_FILE,{});
-const saveSessions=v=>writeJson(SESSIONS_FILE,v);
-const adminNames=new Set([process.env.ADMIN_USERNAME||'',...(process.env.ADMIN_USERS||'').split(',')].map(x=>x.trim().toLowerCase()).filter(Boolean));
-const isAdmin=u=>!!u&&adminNames.has(String(u.username).toLowerCase());
 function hashPassword(password,salt=crypto.randomBytes(16).toString('hex')){return {salt,hash:crypto.scryptSync(String(password),salt,64).toString('hex')}}
-function issueToken(user){const token=crypto.randomBytes(48).toString('base64url');const all=sessions();all[token]={userId:user.id,created:new Date().toISOString()};saveSessions(all);return token}
-function auth(req,res,next){const token=(req.get('Authorization')||'').replace(/^Bearer\\s+/i,'');if(!token)return res.status(401).json({error:'Sign in required'});const all=sessions(),session=all[token];if(!session)return res.status(401).json({error:'Session expired or revoked'});const user=users().find(u=>u.id===session.userId&&!u.disabled);if(!user){delete all[token];saveSessions(all);return res.status(401).json({error:'Account disabled or removed'});}req.token=token;req.user={...user,role:isAdmin(user)?'Admin':'User'};next()}
+function issueToken(user){const payload=Buffer.from(JSON.stringify({id:user.id,exp:Date.now()+12*60*60*1000})).toString('base64url');const sig=crypto.createHmac('sha256',TOKEN_SECRET).update(payload).digest('base64url');return payload+'.'+sig}
+function auth(req,res,next){try{const token=(req.get('Authorization')||'').replace(/^Bearer\s+/i,'');const [payload,sig]=token.split('.');if(!payload||!sig)throw 0;const expected=crypto.createHmac('sha256',TOKEN_SECRET).update(payload).digest();const actual=Buffer.from(sig,'base64url');if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))throw 0;const data=JSON.parse(Buffer.from(payload,'base64url').toString());if(data.exp<Date.now())throw 0;const user=users().find(u=>u.id===data.id&&!u.disabled);if(!user)throw 0;req.user={...user,role:effectiveRole(user)};next()}catch{return res.status(401).json({error:'Sign in required'})}}
 function requireRole(...roles){return (req,res,next)=>roles.includes(req.user.role)?next():res.status(403).json({error:'Insufficient permissions'})}
-if(!users().length&&process.env.ADMIN_USERNAME&&process.env.ADMIN_PASSWORD){const p=hashPassword(process.env.ADMIN_PASSWORD);saveUsers([{id:crypto.randomUUID(),username:String(process.env.ADMIN_USERNAME),...p,disabled:false,created:new Date().toISOString()}]);}
-app.post('/api/auth/login',(req,res)=>{const name=String(req.body?.username||'').trim().toLowerCase(),password=String(req.body?.password||'');const u=users().find(x=>x.username.toLowerCase()===name&&!x.disabled);if(!u)return res.status(401).json({error:'Invalid username or password'});const h=crypto.scryptSync(password,u.salt,64);if(!crypto.timingSafeEqual(h,Buffer.from(u.hash,'hex')))return res.status(401).json({error:'Invalid username or password'});const audit=readJson(LOGIN_AUDIT_FILE,[]);audit.unshift({id:crypto.randomUUID(),username:u.username,userId:u.id,role:isAdmin(u)?'Admin':'User',device:String(req.get('X-Remix-Device')||'Unknown device').slice(0,160),ip:String(req.ip||req.socket.remoteAddress||'Unknown').replace(/^::ffff:/,''),at:new Date().toISOString()});writeJson(LOGIN_AUDIT_FILE,audit.slice(0,1000));res.json({token:issueToken(u),user:{id:u.id,username:u.username,role:isAdmin(u)?'Admin':'User'}})});
-app.post('/api/auth/logout',auth,(req,res)=>{const all=sessions();delete all[req.token];saveSessions(all);res.json({loggedOut:true})});
+if(!users().length&&process.env.ADMIN_USERNAME&&process.env.ADMIN_PASSWORD){const p=hashPassword(process.env.ADMIN_PASSWORD);saveUsers([{id:crypto.randomUUID(),username:String(process.env.ADMIN_USERNAME),...p,role:'User',disabled:false,created:new Date().toISOString()}]);}
+app.post('/api/auth/login',(req,res)=>{const name=String(req.body?.username||'').trim().toLowerCase(),password=String(req.body?.password||'');const u=users().find(x=>x.username.toLowerCase()===name&&!x.disabled);if(!u)return res.status(401).json({error:'Invalid username or password'});const h=crypto.scryptSync(password,u.salt,64);if(!crypto.timingSafeEqual(h,Buffer.from(u.hash,'hex')))return res.status(401).json({error:'Invalid username or password'});const audit=readJson(LOGIN_AUDIT_FILE,[]);audit.unshift({id:crypto.randomUUID(),username:u.username,userId:u.id,role:u.role,device:String(req.get('X-Remix-Device')||'Unknown device').slice(0,160),ip:String(req.ip||req.socket.remoteAddress||'Unknown').replace(/^::ffff:/,''),at:new Date().toISOString()});writeJson(LOGIN_AUDIT_FILE,audit.slice(0,1000));res.json({token:issueToken(u),user:{id:u.id,username:u.username,role:effectiveRole(u)}})});
 app.use((req,res,next)=>{if(req.path==='/health'||req.path==='/api/auth/login'||req.path==='/'||req.method==='OPTIONS')return next();auth(req,res,next)});
-app.use((req,res,next)=>{next()});
+app.use((req,res,next)=>next());
 app.get('/api/auth/me',(req,res)=>res.json({id:req.user.id,username:req.user.username,role:req.user.role}));
 
+
 app.get('/api/admin/login-audit',requireRole('Admin'),(_req,res)=>res.json({logins:readJson(LOGIN_AUDIT_FILE,[]).slice(0,500)}));
-app.get('/api/admin/users',requireRole('Admin'),(_req,res)=>res.json({users:users().map(({id,username,disabled,created})=>({id,username,role:isAdmin({username})?'Admin':'User',disabled,created}))}));
-app.post('/api/admin/users',requireRole('Admin'),(req,res)=>{try{const username=String(req.body?.username||'').trim(),password=String(req.body?.password||'');if(!/^[a-zA-Z0-9_.-]{3,40}$/.test(username))throw new Error('Username must be 3–40 characters (letters, numbers, _, . or -)');if(password.length<10)throw new Error('Password must be at least 10 characters');const all=users();if(all.some(x=>x.username.toLowerCase()===username.toLowerCase()))return res.status(409).json({error:'Username already exists'});const p=hashPassword(password),u={id:crypto.randomUUID(),username,...p,disabled:false,created:new Date().toISOString()};all.push(u);saveUsers(all);res.status(201).json({id:u.id,username,role:'User',disabled:false})}catch(e){res.status(400).json({error:e.message})}});
+app.get('/api/admin/users',requireRole('Admin'),(_req,res)=>res.json({users:users().map(({id,username,role,disabled,created})=>({id,username,role,disabled,created}))}));
+app.post('/api/admin/users',requireRole('Admin'),(req,res)=>{try{const username=String(req.body?.username||'').trim(),password=String(req.body?.password||''),role='User';if(!/^[a-zA-Z0-9_.-]{3,40}$/.test(username))throw new Error('Username must be 3–40 characters (letters, numbers, _, . or -)');if(password.length<10)throw new Error('Password must be at least 10 characters');const all=users();if(all.some(x=>x.username.toLowerCase()===username.toLowerCase()))return res.status(409).json({error:'Username already exists'});const p=hashPassword(password),u={id:crypto.randomUUID(),username,...p,role,disabled:false,created:new Date().toISOString()};all.push(u);saveUsers(all);res.status(201).json({id:u.id,username,role,disabled:false})}catch(e){res.status(400).json({error:e.message})}});
 app.patch('/api/admin/users/:id',(req,res)=>{if(!['Admin'].includes(req.user.role))return res.status(403).json({error:'Admin only'});const all=users(),u=all.find(x=>x.id===req.params.id);if(!u)return res.status(404).json({error:'User not found'});if(req.body?.disabled!==undefined)u.disabled=!!req.body.disabled;if(req.body?.password!==undefined){if(String(req.body.password).length<10)return res.status(400).json({error:'Password must be at least 10 characters'});Object.assign(u,hashPassword(req.body.password))}saveUsers(all);res.json({updated:true})});
 app.delete('/api/admin/users/:id',requireRole('Admin'),(req,res)=>{const all=users(),u=all.find(x=>x.id===req.params.id);if(!u)return res.status(404).json({error:'User not found'});if(u.id===req.user.id)return res.status(400).json({error:'You cannot remove your own account'});saveUsers(all.filter(x=>x.id!==u.id));res.json({deleted:true})});
 
-app.get('/health',(_r,s)=>s.json({status:'ok',service:'Remix Developer App',version:'2.1.0'}));app.get('/api/keepalive',(_r,s)=>s.json({status:'awake',timestamp:new Date().toISOString()}));
+app.get('/health',(_r,s)=>s.json({status:'ok',service:'Remix Developer App',version:'2.2.0'}));app.get('/api/keepalive',(_r,s)=>s.json({status:'awake',timestamp:new Date().toISOString()}));
 app.get('/api/storage',(req,res)=>{try{const folder=safeFolder(req.query.folder),allF=folders(),allFiles=files().filter(f=>(f.folder||'')===folder).map(f=>({...f,type:'file',path:[folder,f.name].filter(Boolean).join('/'),parent:folder})),allFolders=allF.filter(f=>f.parent===folder).map(f=>({...f,type:'folder',size:0,uploaded:f.created,path:f.path,parent:folder,download_url:''}));const entries=[...allFolders,...allFiles].sort((a,b)=>(a.order??999999)-(b.order??999999)||a.name.localeCompare(b.name));res.json({folder,entries,folders:allF.map(f=>f.path)})}catch(e){res.status(400).json({error:e.message})}});
 app.post('/api/folders',(req,res)=>{try{const name=safeName(req.body?.name),parent=safeFolder(req.body?.parent),folderPath=[parent,name].filter(Boolean).join('/');ensureUnique(name,parent);const all=folders();const f={id:crypto.randomUUID(),name,parent,path:folderPath,order:all.filter(x=>x.parent===parent).length,created:new Date().toISOString()};all.push(f);saveFolders(all);activity(parent,'Created folder',name,req.get('X-Remix-Device'));res.status(201).json({created:true,...f})}catch(e){res.status(e.status||400).json({error:e.message})}});
 app.post('/api/upload',(req,res)=>upload.array('files',30)(req,res,err=>{if(err)return res.status(err instanceof multer.MulterError?413:400).json({error:err.message||'Upload failed'});try{const folder=safeFolder(req.body?.folder),saved=[];for(const f of req.files||[]){const name=safeName(f.originalname);ensureUnique(name,folder);const item={id:path.basename(f.filename),name,size:f.size,uploaded:new Date().toISOString(),folder,order:files().filter(x=>(x.folder||'')===folder).length,download_url:'/files/'+encodeURIComponent(path.basename(f.filename)),sha256:crypto.createHash('sha256').update(fs.readFileSync(f.path)).digest('hex')};writeJson(metaPath(item.id),item);activity(folder,'Uploaded',name,req.get('X-Remix-Device'));saved.push(item)}res.status(201).json({uploaded:saved.length,files:saved})}catch(e){for(const f of req.files||[])try{fs.unlinkSync(f.path)}catch{}res.status(e.status||400).json({error:e.message})}}));
