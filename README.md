@@ -1,22 +1,25 @@
-# Remix Developer App — hosted server
+# Remix Developer App — hosted server (v2.1)
 
-Node.js/Express API for the Remix Developer App Windows client.
+Node.js 20+ / Express server for the Windows sync client.
 
-## Deploy
-- Runtime: Node.js 20+ (Node.js 22 recommended)
-- Start command: `npm start`
-- Persistent disk: mount it at the configured `STORAGE_DIR` (or preserve the default `storage` directory).
-- Environment: `PORT` (platform supplied), `STORAGE_DIR` (recommended persistent mount), `MAX_FILE_MB` (default 250), `UPDATE_VERSION`, `UPDATE_CHANGES` (pipe-separated), `UPDATE_DOWNLOAD_URL`.
+## Required deployment settings
+- `STORAGE_DIR`: persistent disk mount. Preserve it across deploys.
+- `ADMIN_USERNAME`: initial administrator username (created only when there are no users).
+- `ADMIN_PASSWORD`: initial administrator password (minimum 10 characters).
+- `TOKEN_SECRET`: optional long random secret. If omitted, a random secret is persisted under `STORAGE_DIR/metadata/token-secret`; keep the persistent disk.
+- `PORT`: platform supplied; `MAX_FILE_MB`: upload limit (default 250).
 
-The server stores binary file contents under `STORAGE_DIR/uploads` and JSON metadata/activity under `STORAGE_DIR/metadata`. Ensure the platform's persistent disk is mounted at `STORAGE_DIR`; ephemeral container storage will not survive redeploys.
+Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before the first start. If users already exist, changing these variables does not reset accounts. Do not expose the service over plain HTTP; use HTTPS.
 
-## API capabilities
-- List folders/files and retrieve activity.
-- Create folders and upload/download actual file bytes.
-- Rename and move files/folders (`PUT /api/items/:type/:id`).
-- Copy files/folders (`POST /api/items/:type/:id/copy`).
-- Delete files/folders (`DELETE /api/items/:type/:id`).
-- Replace file contents (`POST /api/files/:id/replace`, multipart field `file`).
-- Persist manual ordering (`PATCH /api/storage/order`).
+## Accounts and permissions
+- Passwords are stored as salted scrypt hashes, never plaintext.
+- Bearer tokens expire after 12 hours.
+- Admin: manage accounts and all files.
+- Editor: create, upload, replace, move, and delete shared files.
+- Viewer: read-only access.
+- Admin API: `GET/POST /api/admin/users`, `PATCH/DELETE /api/admin/users/:id`.
+- Self-service password change: `POST /api/auth/password`.
+- Login: `POST /api/auth/login`.
 
-Names and folder paths are validated; metadata writes use a temporary file and atomic rename. This server does not implement authentication or per-user authorization. Do not expose it publicly with sensitive data until authentication and transport/access controls are added.
+## Storage and sync API
+The server stores uploaded file bytes in `STORAGE_DIR/uploads` and metadata in `STORAGE_DIR/metadata`. The desktop client reconciles the server manifest with a user-selected local Windows folder. Remote changes download into that folder; local changes are staged and published with **Send changes**. Deploy the matching client and server versions together.
