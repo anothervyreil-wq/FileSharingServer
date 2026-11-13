@@ -23,3 +23,7 @@ Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before the first start. If users alrea
 
 ## Storage and sync API
 The server stores uploaded file bytes in `STORAGE_DIR/uploads` and metadata in `STORAGE_DIR/metadata`. The desktop client reconciles the server manifest with a user-selected local Windows folder. Remote changes download into that folder; local changes are staged and published with **Send changes**. Deploy the matching client and server versions together.
+
+
+### Owner role (v2.3)
+Set `OWNER_USERNAME` and `OWNER_PASSWORD` in the hosting environment to create/designate the protected Owner account. Owner has Admin powers and can promote/demote other accounts using the app. Admins cannot grant admin access. Owner accounts cannot be disabled or deleted through the app. The owner username is controlled by server environment configuration.
