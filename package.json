@@ -1,6 +1,6 @@
 {
   "name": "remix-developer-app-server",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Hosted storage API for Remix Developer App",
   "main": "server.js",
